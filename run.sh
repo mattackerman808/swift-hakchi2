@@ -16,7 +16,7 @@ mkdir -p "$APP/MacOS" "$APP/Resources"
 
 # Copy binary + resources
 cp .build/debug/SwiftHakchi "$APP/MacOS/SwiftHakchi"
-cp -R .build/debug/SwiftHakchi_SwiftHakchi.bundle "$APP/Resources/" 2>/dev/null || true
+cp -R .build/debug/SwiftHakchi_SwiftHakchi.bundle "$PWD/.build/Swift Hakchi2.app/" 2>/dev/null || true
 cp SwiftHakchi/Resources/AppIcon.icns "$APP/Resources/AppIcon.icns"
 cp Info.plist "$APP/Info.plist"
 
