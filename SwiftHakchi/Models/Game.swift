@@ -27,6 +27,7 @@ struct Game: Identifiable, Hashable {
     var testId: Int
     var consoleType: ConsoleType
     var isSelected: Bool  // whether to sync this game
+    var isOnConsole: Bool = false  // whether this game is currently installed on the console
     var source: GameSource
 
     var isStock: Bool { source == .stock }
@@ -34,10 +35,11 @@ struct Game: Identifiable, Hashable {
     // Derived
     var code: String { id }
 
-    /// Default cover art image (lazy loaded)
+    /// Cover art image, served from an in-memory cache to avoid
+    /// repeated disk I/O on every SwiftUI re-render.
     var coverImage: NSImage? {
         guard let path = coverArtPath else { return nil }
-        return NSImage(contentsOfFile: path)
+        return ImageCache.shared.image(for: path)
     }
 
     static func == (lhs: Game, rhs: Game) -> Bool {
@@ -66,7 +68,7 @@ extension Game {
         self.saveCount = desktopFile.saveCount
         self.testId = desktopFile.testId
         self.consoleType = consoleType
-        self.isSelected = source != .stock  // stock games selected by default? they're always there
+        self.isSelected = true  // all games selected by default (stock = included in overlay)
         self.source = source
 
         let gamePath = (basePath as NSString).appendingPathComponent(desktopFile.code)
@@ -79,6 +81,12 @@ extension Game {
     }
 
     /// Create a Game from remote .desktop content pulled over SSH
+    /// Evict this game's cached cover image so it reloads from disk on next access.
+    func invalidateCoverCache() {
+        guard let path = coverArtPath else { return }
+        ImageCache.shared.evict(path)
+    }
+
     init(code: String, desktopContent: String, consoleType: ConsoleType, source: GameSource) {
         let desktop = DesktopFile(string: desktopContent)
         if desktop.code.isEmpty { desktop.code = code }
@@ -97,9 +105,40 @@ extension Game {
         self.saveCount = desktop.saveCount
         self.testId = desktop.testId
         self.consoleType = consoleType
-        self.isSelected = source == .console  // custom games are selected, stock always present
+        self.isSelected = true  // all games selected by default
+        self.isOnConsole = source == .console  // console-pulled games are already installed
         self.source = source
         self.romPath = ""
         self.coverArtPath = nil
+    }
+}
+
+/// In-memory cache for cover art images, keyed by file path.
+/// Prevents repeated disk I/O when SwiftUI re-renders tile views.
+final class ImageCache {
+    static let shared = ImageCache()
+
+    private let cache = NSCache<NSString, NSImage>()
+
+    private init() {
+        cache.countLimit = 500
+    }
+
+    func image(for path: String) -> NSImage? {
+        let key = path as NSString
+        if let cached = cache.object(forKey: key) {
+            return cached
+        }
+        guard let img = NSImage(contentsOfFile: path) else { return nil }
+        cache.setObject(img, forKey: key)
+        return img
+    }
+
+    func evict(_ path: String) {
+        cache.removeObject(forKey: path as NSString)
+    }
+
+    func purgeAll() {
+        cache.removeAllObjects()
     }
 }

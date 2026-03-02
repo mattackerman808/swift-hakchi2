@@ -5,15 +5,20 @@ final class AppConfig: ObservableObject, Codable {
     static let shared = AppConfig.load()
 
     @Published var lastConsoleType: ConsoleType = .nes
+    @Published var lastDeviceId: String = ""
+    @Published var installedGameCodes: [String] = []
     @Published var separateGameStorage: Bool = false
     @Published var forceNetwork: Bool = false
     @Published var uploadCompressed: Bool = true
     @Published var exportLinked: Bool = false
     @Published var maxGameSize: Int = 300  // MB
+    @Published var theGamesDbApiKey: String = ""
+    @Published var modRepositoryURLs: [String] = ["https://hakchi.net/KMFDManic/NESC-SNESC-Modifications/.repo/"]
 
     enum CodingKeys: String, CodingKey {
-        case lastConsoleType, separateGameStorage, forceNetwork
+        case lastConsoleType, lastDeviceId, installedGameCodes, separateGameStorage, forceNetwork
         case uploadCompressed, exportLinked, maxGameSize
+        case theGamesDbApiKey, modRepositoryURLs
     }
 
     init() {}
@@ -21,21 +26,30 @@ final class AppConfig: ObservableObject, Codable {
     required init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         lastConsoleType = try container.decodeIfPresent(ConsoleType.self, forKey: .lastConsoleType) ?? .nes
+        lastDeviceId = try container.decodeIfPresent(String.self, forKey: .lastDeviceId) ?? ""
+        installedGameCodes = try container.decodeIfPresent([String].self, forKey: .installedGameCodes) ?? []
         separateGameStorage = try container.decodeIfPresent(Bool.self, forKey: .separateGameStorage) ?? false
         forceNetwork = try container.decodeIfPresent(Bool.self, forKey: .forceNetwork) ?? false
         uploadCompressed = try container.decodeIfPresent(Bool.self, forKey: .uploadCompressed) ?? true
         exportLinked = try container.decodeIfPresent(Bool.self, forKey: .exportLinked) ?? false
         maxGameSize = try container.decodeIfPresent(Int.self, forKey: .maxGameSize) ?? 300
+        theGamesDbApiKey = try container.decodeIfPresent(String.self, forKey: .theGamesDbApiKey) ?? ""
+        modRepositoryURLs = try container.decodeIfPresent([String].self, forKey: .modRepositoryURLs)
+            ?? ["https://hakchi.net/KMFDManic/NESC-SNESC-Modifications/.repo/"]
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(lastConsoleType, forKey: .lastConsoleType)
+        try container.encode(lastDeviceId, forKey: .lastDeviceId)
+        try container.encode(installedGameCodes, forKey: .installedGameCodes)
         try container.encode(separateGameStorage, forKey: .separateGameStorage)
         try container.encode(forceNetwork, forKey: .forceNetwork)
         try container.encode(uploadCompressed, forKey: .uploadCompressed)
         try container.encode(exportLinked, forKey: .exportLinked)
         try container.encode(maxGameSize, forKey: .maxGameSize)
+        try container.encode(theGamesDbApiKey, forKey: .theGamesDbApiKey)
+        try container.encode(modRepositoryURLs, forKey: .modRepositoryURLs)
     }
 
     // MARK: - Persistence

@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Swift Hakchi</string>
+    <string>Swift Hakchi2</string>
     <key>CFBundleDisplayName</key>
-    <string>Swift Hakchi</string>
+    <string>Swift Hakchi2</string>
     <key>CFBundleIdentifier</key>
     <string>com.swifthakchi.app</string>
     <key>CFBundleVersion</key>
@@ -20,6 +20,8 @@
     <string>14.0</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>

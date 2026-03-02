@@ -18,10 +18,16 @@ struct StatusBarView: View {
             Divider()
                 .frame(height: 12)
 
-            // Console type
+            // Console type + hardware ID
             if appState.deviceManager.consoleType != .unknown {
                 Text(appState.deviceManager.consoleType.displayName)
                     .font(.caption)
+
+                if !appState.deviceManager.uniqueId.isEmpty {
+                    Text(appState.deviceManager.uniqueId)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 Divider()
                     .frame(height: 12)
@@ -42,16 +48,31 @@ struct StatusBarView: View {
                     .frame(height: 12)
             }
 
+            // Background activity indicator
+            if let message = appState.statusMessage {
+                HStack(spacing: 4) {
+                    ProgressView()
+                        .controlSize(.mini)
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Divider()
+                    .frame(height: 12)
+            }
+
             Spacer()
 
             // Game counts
             let allGames = appState.gameManager.games
-            let stockCount = allGames.filter { $0.source == .stock }.count
+            let stockGames = allGames.filter { $0.source == .stock }
+            let selectedStock = stockGames.filter { $0.isSelected }.count
             let customCount = allGames.filter { $0.source != .stock }.count
-            let selectedCount = allGames.filter { $0.isSelected && $0.source != .stock }.count
+            let selectedCustom = allGames.filter { $0.isSelected && $0.source != .stock }.count
 
-            if stockCount > 0 {
-                Text("\(stockCount) built-in")
+            if !stockGames.isEmpty {
+                Text("\(selectedStock)/\(stockGames.count) built-in")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -59,7 +80,7 @@ struct StatusBarView: View {
                     .frame(height: 12)
             }
 
-            Text("\(selectedCount)/\(customCount) custom games selected")
+            Text("\(selectedCustom)/\(customCount) custom games selected")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

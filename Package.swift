@@ -53,6 +53,10 @@ let package = Package(
                 .copy("Resources/fes1.bin"),
                 .copy("Resources/basehmods.tar"),
                 .copy("Resources/hakchi.hmod"),
+                .copy("Resources/snescarts.xml"),
+                .copy("Resources/nescarts.xml"),
+                .copy("Resources/romfiles.xml"),
+                .copy("Resources/AppIcon.icns"),
             ],
             linkerSettings: [
                 .linkedFramework("IOKit"),

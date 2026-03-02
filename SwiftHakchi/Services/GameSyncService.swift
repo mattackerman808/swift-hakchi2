@@ -33,6 +33,7 @@ actor GameSyncService {
         progress: @Sendable (String, Double) -> Void
     ) async throws {
         let selectedGames = games.filter { $0.isSelected && $0.source == .local }
+        let deselectedStockCodes = Set(games.filter { $0.isStock && !$0.isSelected }.map { $0.code })
         let gamePath = consoleType.originalGamesPath
         let syncBase = "\(gameSyncPath)/\(consoleType.syncCode)"
         let storageDir = "\(syncBase)/.storage"
@@ -56,9 +57,11 @@ actor GameSyncService {
         _ = try? await shell.execute("rm -rf \"\(syncBase)\"")
         _ = try? await shell.execute("mkdir -p \"\(storageDir)\" \"\(page0)\" \"\(page1)\"")
 
-        // Step 4: Build page 000/ — stock game entries from squashfs
+        // Step 4: Build page 000/ — stock game entries from squashfs (skip deselected)
         progress("Building stock game entries...", 0.12)
-        try await buildStockGameEntries(page0: page0, squashfsGamePath: squashfsGamePath)
+        try await buildStockGameEntries(
+            page0: page0, squashfsGamePath: squashfsGamePath, excludeCodes: deselectedStockCodes
+        )
 
         // Step 5: Create "More games..." folder entry (CLV-S-00001) in page 000/
         progress("Creating folder structure...", 0.18)
@@ -102,12 +105,22 @@ actor GameSyncService {
 
     /// Build stock game entries in page 000/ from squashfs.
     /// Each entry has: .desktop + autoplay/pixelart symlinks to squashfs.
-    private func buildStockGameEntries(page0: String, squashfsGamePath: String) async throws {
+    /// Games in `excludeCodes` are skipped (user deselected them).
+    private func buildStockGameEntries(
+        page0: String, squashfsGamePath: String, excludeCodes: Set<String>
+    ) async throws {
         // Run a console-side script to create all stock game dirs at once.
         // After copying .desktop from squashfs, rewrite Icon= to point to the
         // squashfs path (e.g. /var/squashfs/usr/share/games/...) since the
         // original gamepath will be covered by our bind mount.
         let gamePath = consoleType.originalGamesPath
+
+        // Build exclusion list for the shell script
+        let excludeList = excludeCodes.joined(separator: "|")
+        let excludeCheck = excludeCodes.isEmpty ? "" : """
+          case "$code" in \(excludeList)) continue ;; esac
+        """
+
         let script = """
         sqfs="\(squashfsGamePath)"
         dst="\(page0)"
@@ -115,12 +128,13 @@ actor GameSyncService {
         for d in "$sqfs"/CLV-*; do
           [ -d "$d" ] || continue
           code=$(basename "$d")
+          \(excludeCheck)
           mkdir -p "$dst/$code"
           # Copy .desktop file from squashfs
           cp "$d/$code.desktop" "$dst/$code/" 2>/dev/null
-          # Rewrite Icon= path to point to squashfs instead of gamepath
+          # Rewrite all paths (Exec ROM path, Icon) to use squashfs
           # (gamepath will be covered by bind mount, squashfs still accessible)
-          sed -i "s|Icon=$gp|Icon=$sqfs|" "$dst/$code/$code.desktop" 2>/dev/null
+          sed -i "s|$gp|$sqfs|g" "$dst/$code/$code.desktop" 2>/dev/null
           # Symlink autoplay/pixelart directories
           [ -d "$d/autoplay" ] && ln -sf "$d/autoplay" "$dst/$code/autoplay"
           [ -d "$d/pixelart" ] && ln -sf "$d/pixelart" "$dst/$code/pixelart"
@@ -128,7 +142,8 @@ actor GameSyncService {
         echo "done"
         """
         let result = try? await shell.execute(script)
-        logger.info("Stock game entries: \(result?.output ?? "no output")")
+        let excluded = excludeCodes.count
+        logger.info("Stock game entries: \(result?.output ?? "no output") (excluded \(excluded))")
     }
 
     // MARK: - Folder Navigation
@@ -233,6 +248,9 @@ actor GameSyncService {
         var storageTar = TarWriter()
         storageTar.addDirectory(name: "\(code)/")
 
+        let coverW = consoleType.coverWidth
+        let coverH = consoleType.coverHeight
+
         var hasPng = false
         for file in files {
             guard let data = try? Data(contentsOf: file) else { continue }
@@ -241,7 +259,11 @@ actor GameSyncService {
                 continue
             } else if filename.hasSuffix(".png") {
                 hasPng = true
-                storageTar.addFile(name: "\(code)/\(filename)", contents: data)
+                // Resize cover art to console dimensions (saves upload bandwidth)
+                let resized = resizeCoverArt(data: data, width: coverW, height: coverH)
+                storageTar.addFile(name: "\(code)/\(code).png", contents: resized)
+                let small = resizeCoverArt(data: data, width: 40, height: 40)
+                storageTar.addFile(name: "\(code)/\(code)_small.png", contents: small)
             } else if romFile != nil && filename == romFile!.lastPathComponent {
                 storageTar.addFile(name: "\(code)/\(safeRomFilename)", contents: data)
             } else {

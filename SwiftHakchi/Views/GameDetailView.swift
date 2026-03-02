@@ -4,59 +4,43 @@ import SwiftUI
 struct GameDetailView: View {
     @Binding var game: Game
     @EnvironmentObject var appState: AppState
+    @State private var showScraper = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                // Header with cover art
-                HStack(alignment: .top, spacing: 20) {
-                    coverArtSection
-                    metadataSection
-                }
-                .padding()
-
-                Divider()
-
-                // Description
-                descriptionSection
-                    .padding(.horizontal)
-
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text("Game Details")
+                    .font(.headline)
                 Spacer()
             }
+            .padding(.horizontal, 12)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    metadataSection
+                        .padding()
+
+                    Divider()
+
+                    descriptionSection
+                        .padding(.horizontal)
+
+                    Spacer()
+                }
+            }
         }
-        .frame(minWidth: 400)
+        .sheet(isPresented: $showScraper) {
+            ScraperView(game: $game)
+                .environmentObject(appState)
+        }
     }
 
     // MARK: - Sections
-
-    private var coverArtSection: some View {
-        VStack {
-            if let coverImage = game.coverImage {
-                Image(nsImage: coverImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: CGFloat(game.consoleType.coverWidth),
-                           height: CGFloat(game.consoleType.coverHeight))
-                    .cornerRadius(8)
-                    .shadow(radius: 2)
-            } else {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(.quaternary)
-                    .frame(width: CGFloat(game.consoleType.coverWidth),
-                           height: CGFloat(game.consoleType.coverHeight))
-                    .overlay {
-                        Image(systemName: "photo")
-                            .font(.largeTitle)
-                            .foregroundStyle(.secondary)
-                    }
-            }
-
-            Button("Change Cover...") {
-                changeCoverArt()
-            }
-            .buttonStyle(.link)
-        }
-    }
 
     private var metadataSection: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -100,9 +84,22 @@ struct GameDetailView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
+                if game.source == .local {
+                    Button("Search Online...") {
+                        showScraper = true
+                    }
+                    .help("Search TheGamesDB for metadata and cover art")
+                }
+                if appState.deviceManager.isConnected {
+                    Button("Download from Console") {
+                        appState.downloadGameFromConsole(game: game)
+                    }
+                    .help("Save a copy of this game's ROM from the console to your Mac")
+                }
                 Button("Save") {
                     appState.gameManager.saveGame(game)
                 }
+                .help("Save changes to this game's metadata")
             }
         }
     }
@@ -118,21 +115,4 @@ struct GameDetailView: View {
         }
     }
 
-    // MARK: - Actions
-
-    private func changeCoverArt() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.png, .jpeg]
-        panel.allowsMultipleSelection = false
-
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        // Copy to game directory
-        if let data = try? Data(contentsOf: url) {
-            let destPath = URL(fileURLWithPath: game.romPath)
-                .appendingPathComponent("\(game.code).png")
-            try? data.write(to: destPath)
-            game.coverArtPath = destPath.path
-        }
-    }
 }

@@ -13,7 +13,8 @@ struct HmodPackage: Identifiable, Hashable {
     var isInstalled: Bool = false
 
     init(id: String, name: String = "", version: String = "", creator: String = "",
-         category: String = "", description: String = "", filePath: String? = nil) {
+         category: String = "", description: String = "", filePath: String? = nil,
+         isInstalled: Bool = false) {
         self.id = id
         self.name = name.isEmpty ? id : name
         self.version = version
@@ -21,5 +22,6 @@ struct HmodPackage: Identifiable, Hashable {
         self.category = category
         self.description = description
         self.filePath = filePath
+        self.isInstalled = isInstalled
     }
 }

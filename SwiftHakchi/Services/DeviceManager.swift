@@ -113,6 +113,47 @@ final class DeviceManager: ObservableObject {
         disconnect()
     }
 
+    // MARK: - Manual Connect/Disconnect
+
+    /// Manually disconnect from the console.
+    func manualDisconnect() {
+        Self.debugLog("manualDisconnect: user requested")
+        connectTask?.cancel()
+        connectTask = nil
+        suppressAutoConnect = true
+        disconnect()
+        // Re-enable auto-connect after a short delay so USB re-plug works
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            self.suppressAutoConnect = false
+        }
+    }
+
+    /// Manually attempt to reconnect. Disconnects any stale session first,
+    /// then tries SSH. Returns true if connected, false if failed.
+    @discardableResult
+    func reconnect() async -> Bool {
+        Self.debugLog("reconnect: manual attempt")
+        connectTask?.cancel()
+        disconnect()
+
+        // Give USB a moment to settle
+        try? await Task.sleep(for: .milliseconds(500))
+
+        // Try SSH if RNDIS device is present
+        if usbMonitor.rndisDevicePresent {
+            let success = await trySSHConnect()
+            if success { return true }
+
+            // Retry once more after a short delay
+            try? await Task.sleep(for: .seconds(2))
+            if await trySSHConnect() { return true }
+        }
+
+        Self.debugLog("reconnect: failed")
+        return false
+    }
+
     // MARK: - USB Device Events
 
     private func onRNDISDeviceAppeared() {
@@ -206,10 +247,16 @@ final class DeviceManager: ObservableObject {
         Self.debugLog("probeDevice: starting")
 
         do {
-            // Read unique ID
-            let uidResult = try await shell.execute("cat /etc/clover/uid 2>/dev/null")
-            if uidResult.succeeded {
-                uniqueId = uidResult.output
+            // Read unique hardware ID (matches Hakchi2-CE's "hakchi hwid")
+            let hwidResult = try await shell.execute("hakchi hwid 2>/dev/null")
+            if hwidResult.succeeded && !hwidResult.output.isEmpty {
+                uniqueId = hwidResult.output.replacingOccurrences(of: " ", with: "")
+            } else {
+                // Fallback: try /etc/clover/uid
+                let uidResult = try await shell.execute("cat /etc/clover/uid 2>/dev/null")
+                if uidResult.succeeded && !uidResult.output.isEmpty {
+                    uniqueId = uidResult.output
+                }
             }
 
             // Read version info
