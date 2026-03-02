@@ -35,7 +35,7 @@ jobs:
       - name: Archive
         run: |
           TAG="${GITHUB_REF_NAME}"
-          ditto -c -k --sequesterRsrc "Swift Hakchi2.app" "Swift-Hakchi2-${TAG}-macOS.zip"
+          ditto -c -k --sequesterRsrc --keepParent "Swift Hakchi2.app" "Swift-Hakchi2-${TAG}-macOS.zip"
 
       - name: Create GitHub Release
         env:
