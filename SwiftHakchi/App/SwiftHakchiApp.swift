@@ -24,6 +24,12 @@ struct SwiftHakchiApp: App {
             ContentView()
                 .environmentObject(appState)
                 .frame(minWidth: 800, minHeight: 500)
+                .onAppear {
+                    // Disable tab bar — removes "Show Tab Bar" from View menu
+                    for window in NSApplication.shared.windows {
+                        window.tabbingMode = .disallowed
+                    }
+                }
         }
         .commands {
             AboutCommands()
