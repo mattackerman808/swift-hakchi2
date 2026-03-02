@@ -1,6 +1,6 @@
 # Swift Hakchi2
 
-A native macOS application for modding Nintendo mini consoles, built with Swift and SwiftUI. This is a ground-up rewrite of [Hakchi2 CE](https://github.com/TeamShinkworker/Hakchi2-CE) targeting macOS.
+A native macOS application for modding Nintendo mini consoles, built with Swift and SwiftUI. This is a ground-up rewrite of [Hakchi2 CE](https://github.com/TeamShinkansen/Hakchi2-CE) targeting macOS.
 
 ## Supported Consoles
 
