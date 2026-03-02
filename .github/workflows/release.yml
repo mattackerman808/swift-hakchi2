@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and Release
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build release binary
+        run: swift build -c release
+
+      - name: Assemble .app bundle
+        run: |
+          APP="Swift Hakchi2.app/Contents"
+          mkdir -p "$APP/MacOS" "$APP/Resources"
+
+          cp .build/release/SwiftHakchi "$APP/MacOS/SwiftHakchi"
+          cp -R .build/release/SwiftHakchi_SwiftHakchi.bundle "$APP/Resources/" 2>/dev/null || true
+          cp SwiftHakchi/Resources/AppIcon.icns "$APP/Resources/AppIcon.icns"
+          cp Info.plist "$APP/Info.plist"
+
+      - name: Code sign (ad-hoc)
+        run: codesign -s - --deep --force "Swift Hakchi2.app"
+
+      - name: Archive
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          ditto -c -k --sequesterRsrc "Swift Hakchi2.app" "Swift-Hakchi2-${TAG}-macOS.zip"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release create "$TAG" \
+            "Swift-Hakchi2-${TAG}-macOS.zip" \
+            --title "Swift Hakchi2 ${TAG}" \
+            --generate-notes
