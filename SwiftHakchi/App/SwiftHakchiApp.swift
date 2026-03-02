@@ -13,7 +13,7 @@ struct SwiftHakchiApp: App {
         NSApplication.shared.activate(ignoringOtherApps: true)
 
         // Set the app icon for Dock and About panel
-        if let iconURL = Bundle.module.url(forResource: "AppIcon", withExtension: "icns"),
+        if let iconURL = Bundle.appBundle.url(forResource: "AppIcon", withExtension: "icns"),
            let icon = NSImage(contentsOf: iconURL) {
             NSApplication.shared.applicationIconImage = icon
         }

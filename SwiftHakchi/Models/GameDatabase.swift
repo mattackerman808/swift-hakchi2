@@ -41,7 +41,7 @@ final class GameDatabase {
     // MARK: - ROM Files Database (romfiles.xml — CRC32 → TGDB ID)
 
     private func loadRomFilesDatabase() {
-        guard let url = Bundle.module.url(forResource: "romfiles", withExtension: "xml"),
+        guard let url = Bundle.appBundle.url(forResource: "romfiles", withExtension: "xml"),
               let data = try? Data(contentsOf: url) else {
             logger.warning("romfiles.xml not found in bundle")
             return
@@ -59,7 +59,7 @@ final class GameDatabase {
     // MARK: - SNES Database (snescarts.xml)
 
     private func loadSNESDatabase() {
-        guard let url = Bundle.module.url(forResource: "snescarts", withExtension: "xml"),
+        guard let url = Bundle.appBundle.url(forResource: "snescarts", withExtension: "xml"),
               let data = try? Data(contentsOf: url) else {
             logger.warning("snescarts.xml not found in bundle")
             return
@@ -86,7 +86,7 @@ final class GameDatabase {
     // MARK: - NES Database (nescarts.xml - BootGod NesCartDB format)
 
     private func loadNESDatabase() {
-        guard let url = Bundle.module.url(forResource: "nescarts", withExtension: "xml"),
+        guard let url = Bundle.appBundle.url(forResource: "nescarts", withExtension: "xml"),
               let data = try? Data(contentsOf: url) else {
             logger.warning("nescarts.xml not found in bundle")
             return

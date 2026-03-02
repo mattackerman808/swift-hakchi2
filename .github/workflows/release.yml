@@ -25,7 +25,7 @@ jobs:
           mkdir -p "$APP/MacOS" "$APP/Resources"
 
           cp .build/release/SwiftHakchi "$APP/MacOS/SwiftHakchi"
-          cp -R .build/release/SwiftHakchi_SwiftHakchi.bundle "Swift Hakchi2.app/" 2>/dev/null || true
+          cp -R .build/release/SwiftHakchi_SwiftHakchi.bundle "$APP/Resources/" 2>/dev/null || true
           cp SwiftHakchi/Resources/AppIcon.icns "$APP/Resources/AppIcon.icns"
           cp Info.plist "$APP/Info.plist"
 
