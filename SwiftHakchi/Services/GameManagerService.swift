@@ -1156,7 +1156,7 @@ final class GameManagerService: ObservableObject {
 
         guard !urls.isEmpty else { return }
 
-        Task.detached(priority: .utility) {
+        Task.detached(priority: .utility) { [urls] in
             for url in urls {
                 do {
                     var request = URLRequest(url: url)
