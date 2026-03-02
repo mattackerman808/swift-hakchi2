@@ -51,6 +51,35 @@ void hakchi_usb_close(hakchi_usb_device_t *dev);
 /// Check if a USB device with given VID/PID is currently connected.
 bool hakchi_usb_device_exists(uint16_t vid, uint16_t pid);
 
+/// Send a USB control transfer (for RNDIS CDC Encapsulated Command/Response).
+/// bmRequestType, bRequest, wValue, wIndex per USB spec.
+/// Returns number of bytes transferred, or negative error code.
+int hakchi_usb_control_transfer(hakchi_usb_device_t *dev,
+                                 uint8_t bmRequestType, uint8_t bRequest,
+                                 uint16_t wValue, uint16_t wIndex,
+                                 uint8_t *data, uint16_t wLength,
+                                 int timeout_ms);
+
+/// Open a USB device for RNDIS: claims both interface 0 (control) and
+/// interface 1 (data with bulk endpoints). Returns NULL on failure.
+hakchi_usb_device_t *hakchi_usb_open_rndis(uint16_t vid, uint16_t pid,
+                                            hakchi_usb_error_t *error);
+
+/// Bulk write on a specific interface pipe (for RNDIS data interface).
+/// pipe_index is the IOKit pipe reference number.
+int hakchi_usb_bulk_write_pipe(hakchi_usb_device_t *dev, uint8_t pipe_index,
+                                const uint8_t *data, int length, int timeout_ms);
+
+/// Bulk read on a specific interface pipe (for RNDIS data interface).
+int hakchi_usb_bulk_read_pipe(hakchi_usb_device_t *dev, uint8_t pipe_index,
+                               uint8_t *data, int length, int timeout_ms);
+
+/// Get the bulk IN pipe index (for RNDIS data interface).
+uint8_t hakchi_usb_get_pipe_in(hakchi_usb_device_t *dev);
+
+/// Get the bulk OUT pipe index (for RNDIS data interface).
+uint8_t hakchi_usb_get_pipe_out(hakchi_usb_device_t *dev);
+
 #ifdef __cplusplus
 }
 #endif

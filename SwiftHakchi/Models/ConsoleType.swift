@@ -68,7 +68,8 @@ enum ConsoleType: String, Codable, CaseIterable, Identifiable {
             "clv-shvc": .superFamicom,
             "clv-snes-shonen": .superFamicomShonenJump,
             "clv-md": .megaDrive,
-            // sftype-sfregion format
+            // sftype-sfregion format (or bare sftype when region is empty)
+            "nes": .nes,
             "nes-usa": .nes,
             "nes-eur": .nes,
             "nes-jpn": .famicom,
@@ -93,6 +94,20 @@ enum ConsoleType: String, Codable, CaseIterable, Identifiable {
         case .superFamicom: return "clv-shvc"
         case .superFamicomShonenJump: return "clv-snes-shonen"
         case .megaDrive: return "clv-md"
+        case .unknown: return "unknown"
+        }
+    }
+
+    /// Sync subdirectory name (used in /var/lib/hakchi/games/{syncCode}/)
+    var syncCode: String {
+        switch self {
+        case .nes: return "nes-usa"
+        case .famicom: return "nes-jpn"
+        case .snesUsa: return "snes-usa"
+        case .snesEur: return "snes-eur"
+        case .superFamicom: return "snes-jpn"
+        case .superFamicomShonenJump: return "hvcj-jpn"
+        case .megaDrive: return "md-usa"
         case .unknown: return "unknown"
         }
     }

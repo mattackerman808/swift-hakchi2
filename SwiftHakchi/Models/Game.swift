@@ -1,6 +1,13 @@
 import Foundation
 import AppKit
 
+/// Where this game came from
+enum GameSource: Hashable {
+    case stock          // Built into the console's squashfs
+    case console        // User-installed on the console (in /var/games)
+    case local          // Imported locally, not yet on console
+}
+
 /// Represents a game loaded from a .desktop file
 struct Game: Identifiable, Hashable {
     let id: String  // CLV-P-XXXXX code
@@ -20,6 +27,9 @@ struct Game: Identifiable, Hashable {
     var testId: Int
     var consoleType: ConsoleType
     var isSelected: Bool  // whether to sync this game
+    var source: GameSource
+
+    var isStock: Bool { source == .stock }
 
     // Derived
     var code: String { id }
@@ -41,7 +51,7 @@ struct Game: Identifiable, Hashable {
 
 extension Game {
     /// Create a Game from a DesktopFile
-    init(desktopFile: DesktopFile, consoleType: ConsoleType, basePath: String) {
+    init(desktopFile: DesktopFile, consoleType: ConsoleType, basePath: String, source: GameSource = .local) {
         self.id = desktopFile.code
         self.name = desktopFile.name
         self.sortName = desktopFile.sortName
@@ -56,9 +66,9 @@ extension Game {
         self.saveCount = desktopFile.saveCount
         self.testId = desktopFile.testId
         self.consoleType = consoleType
-        self.isSelected = true
+        self.isSelected = source != .stock  // stock games selected by default? they're always there
+        self.source = source
 
-        // Derive paths from basePath + code
         let gamePath = (basePath as NSString).appendingPathComponent(desktopFile.code)
         self.romPath = gamePath
         if let iconFilename = desktopFile.iconFilename {
@@ -66,5 +76,30 @@ extension Game {
         } else {
             self.coverArtPath = nil
         }
+    }
+
+    /// Create a Game from remote .desktop content pulled over SSH
+    init(code: String, desktopContent: String, consoleType: ConsoleType, source: GameSource) {
+        let desktop = DesktopFile(string: desktopContent)
+        if desktop.code.isEmpty { desktop.code = code }
+
+        self.id = desktop.code
+        self.name = desktop.name.isEmpty ? code : desktop.name
+        self.sortName = desktop.sortName
+        self.publisher = desktop.publisher
+        self.copyright = desktop.copyright
+        self.genre = desktop.genre
+        self.releaseDate = desktop.releaseDate
+        self.players = desktop.players
+        self.simultaneous = desktop.simultaneous
+        self.description = desktop.description
+        self.commandLine = desktop.exec
+        self.saveCount = desktop.saveCount
+        self.testId = desktop.testId
+        self.consoleType = consoleType
+        self.isSelected = source == .console  // custom games are selected, stock always present
+        self.source = source
+        self.romPath = ""
+        self.coverArtPath = nil
     }
 }

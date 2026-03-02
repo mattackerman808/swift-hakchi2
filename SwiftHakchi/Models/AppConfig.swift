@@ -42,7 +42,7 @@ final class AppConfig: ObservableObject, Codable {
 
     static var configDirectory: URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return appSupport.appendingPathComponent("Hakchi2-CE", isDirectory: true)
+        return appSupport.appendingPathComponent("SwiftHakchi", isDirectory: true)
     }
 
     static var configFile: URL {

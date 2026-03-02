@@ -1,7 +1,20 @@
 import Foundation
 import Combine
+import os
 
-/// Manages console connection lifecycle: USB FEL detection, Bonjour discovery, SSH probe
+private let logger = Logger(subsystem: "com.swifthakchi.app", category: "DeviceManager")
+
+/// Manages console connection lifecycle: USB detection → SSH connect → device probe.
+///
+/// Watches two device types:
+/// - FEL bootloader (VID 0x1F3A PID 0xEFE8) — for flashing
+/// - RNDIS gadget (VID 0x04E8 PID 0x6863) — for SSH communication
+///
+/// When RNDIS appears:
+/// 1. Wait for USB to stabilize
+/// 2. Connect via SSH over RNDIS (user-space network stack)
+/// 3. Probe device: read version info, detect console type
+/// 4. Set isConnected = true
 @MainActor
 final class DeviceManager: ObservableObject {
     // MARK: - Published state
@@ -22,9 +35,26 @@ final class DeviceManager: ObservableObject {
     let usbMonitor = USBMonitor()
     let felService = FELService()
     private(set) var sshService: SSHService?
-    private var bonjourBrowser: BonjourBrowser?
+
+    /// Set to true before flash operations to prevent DeviceManager from auto-connecting.
+    /// When set, device appearance only sets felDevicePresent (no SSH probe).
+    var suppressAutoConnect: Bool = false {
+        didSet {
+            if suppressAutoConnect {
+                connectTask?.cancel()
+                connectTask = nil
+            } else if !suppressAutoConnect && oldValue {
+                Self.debugLog("suppressAutoConnect cleared: rndis=\(usbMonitor.rndisDevicePresent)")
+                if usbMonitor.rndisDevicePresent {
+                    Self.debugLog("RNDIS device already present, triggering connect")
+                    onRNDISDeviceAppeared()
+                }
+            }
+        }
+    }
 
     private var cancellables = Set<AnyCancellable>()
+    private var connectTask: Task<Void, Never>?
 
     // Version minimums
     private let minBootVersion = VersionTuple(1, 0, 2)
@@ -33,56 +63,126 @@ final class DeviceManager: ObservableObject {
 
     init() {}
 
+    /// Write debug messages to a file since stdout isn't captured from GUI apps
+    static func debugLog(_ msg: String) {
+        let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(msg)\n"
+        let path = "/tmp/swifthakchi-debug.log"
+        if let fh = FileHandle(forWritingAtPath: path) {
+            fh.seekToEndOfFile()
+            fh.write(Data(line.utf8))
+            fh.closeFile()
+        } else {
+            FileManager.default.createFile(atPath: path, contents: Data(line.utf8))
+        }
+    }
+
     func start() {
-        // Start USB monitoring
         usbMonitor.start()
 
-        // Forward FEL state
+        // FEL device — just track presence
         usbMonitor.$felDevicePresent
+            .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] present in
-                self?.felDevicePresent = present
+                guard let self else { return }
+                self.felDevicePresent = present
+                if present {
+                    logger.info("FEL device detected")
+                }
             }
             .store(in: &cancellables)
 
-        // Start Bonjour discovery
-        bonjourBrowser = BonjourBrowser()
-        bonjourBrowser?.onServiceFound = { [weak self] host, port in
-            Task { @MainActor in
-                await self?.connectSSH(host: host, port: port)
+        // RNDIS device — auto-connect via SSH
+        usbMonitor.$rndisDevicePresent
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] present in
+                guard let self else { return }
+                if present {
+                    self.onRNDISDeviceAppeared()
+                } else {
+                    self.onRNDISDeviceDisappeared()
+                }
             }
-        }
-        bonjourBrowser?.onServiceLost = { [weak self] in
-            Task { @MainActor in
-                self?.disconnect()
-            }
-        }
-        bonjourBrowser?.start()
+            .store(in: &cancellables)
     }
 
     func stop() {
         usbMonitor.stop()
-        bonjourBrowser?.stop()
+        connectTask?.cancel()
         disconnect()
     }
 
-    // MARK: - SSH Connection
+    // MARK: - USB Device Events
 
-    private func connectSSH(host: String, port: Int) async {
-        let ssh = SSHService()
+    private func onRNDISDeviceAppeared() {
+        Self.debugLog("onRNDISDeviceAppeared: suppress=\(self.suppressAutoConnect)")
+        if suppressAutoConnect { return }
+
+        connectTask?.cancel()
+        connectTask = Task { @MainActor in
+            // Wait for USB gadget to stabilize
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else {
+                Self.debugLog("Connect task cancelled during sleep")
+                return
+            }
+
+            // Retry SSH connection indefinitely while RNDIS device is present.
+            // The console's SSH server may take several seconds after RNDIS
+            // appears, and previous stale TCP state can cause early failures.
+            var attempt = 0
+            while !Task.isCancelled && self.usbMonitor.rndisDevicePresent {
+                attempt += 1
+                Self.debugLog("SSH connect attempt \(attempt)")
+                let success = await self.trySSHConnect()
+                if success { return }
+                try? await Task.sleep(for: .seconds(3))
+            }
+            Self.debugLog("SSH connect loop ended: cancelled=\(Task.isCancelled) rndis=\(self.usbMonitor.rndisDevicePresent)")
+        }
+    }
+
+    private func onRNDISDeviceDisappeared() {
+        Self.debugLog("onRNDISDeviceDisappeared")
+        connectTask?.cancel()
+        disconnect()
+    }
+
+    // MARK: - SSH Probe
+
+    /// Try to connect via SSH over RNDIS. If it works, probe the device.
+    /// Returns true on success.
+    @discardableResult
+    private func trySSHConnect() async -> Bool {
+        Self.debugLog("trySSHConnect: starting")
+        let shell = SSHService()
         do {
-            try await ssh.connect(host: host, port: port)
-            sshService = ssh
+            try await shell.connect()
+            Self.debugLog("trySSHConnect: connected, testing...")
+
+            let testResult = try await shell.execute("echo ok", timeout: 5000)
+            guard testResult.succeeded, testResult.output == "ok" else {
+                Self.debugLog("trySSHConnect: test failed")
+                await shell.disconnect()
+                return false
+            }
+
+            Self.debugLog("trySSHConnect: test passed — probing device")
+            sshService = shell
             await probeDevice()
+            Self.debugLog("trySSHConnect: probe complete, isConnected=\(isConnected)")
+            return isConnected
         } catch {
-            sshService = nil
-            isConnected = false
+            Self.debugLog("trySSHConnect: error — \(error.localizedDescription)")
+            await shell.disconnect()
+            return false
         }
     }
 
     private func disconnect() {
-        Task {
-            await sshService?.disconnect()
+        if let shell = sshService {
+            Task { await shell.disconnect() }
         }
         sshService = nil
         isConnected = false
@@ -99,19 +199,23 @@ final class DeviceManager: ObservableObject {
     // MARK: - Device Probing
 
     private func probeDevice() async {
-        guard let ssh = sshService else { return }
+        guard let shell = sshService else {
+            Self.debugLog("probeDevice: no sshService")
+            return
+        }
+        Self.debugLog("probeDevice: starting")
 
         do {
             // Read unique ID
-            let uidResult = try await ssh.execute("cat /etc/clover/uid 2>/dev/null")
+            let uidResult = try await shell.execute("cat /etc/clover/uid 2>/dev/null")
             if uidResult.succeeded {
                 uniqueId = uidResult.output
             }
 
             // Read version info
-            let hasVersion = try await ssh.execute("[ -f /var/version ] && echo yes")
+            let hasVersion = try await shell.execute("[ -f /var/version ] && echo yes")
             if hasVersion.output == "yes" {
-                let versionResult = try await ssh.execute(
+                let versionResult = try await shell.execute(
                     "source /var/version && echo \"$bootVersion $kernelVersion $hakchiVersion\""
                 )
                 let parts = versionResult.output.components(separatedBy: " ")
@@ -122,14 +226,14 @@ final class DeviceManager: ObservableObject {
                 } else if parts.count >= 2 {
                     bootVersion = parts[0]
                     kernelVersion = parts[1]
-                    let unameResult = try await ssh.execute("uname -r")
+                    let unameResult = try await shell.execute("uname -r")
                     if kernelVersion.isEmpty {
                         kernelVersion = unameResult.output
                     }
                 }
             } else {
                 bootVersion = "1.0.0"
-                let unameResult = try await ssh.execute("uname -r")
+                let unameResult = try await shell.execute("uname -r")
                 kernelVersion = unameResult.output
                 scriptVersion = "v1.0.0-000"
             }
@@ -146,13 +250,13 @@ final class DeviceManager: ObservableObject {
             // Detect console type (3-method cascade)
             var systemCode = ""
 
-            let sysCodeResult = try await ssh.execute("cat /etc/clover/system_code 2>/dev/null")
+            let sysCodeResult = try await shell.execute("cat /etc/clover/system_code 2>/dev/null")
             if sysCodeResult.succeeded && !sysCodeResult.output.isEmpty {
                 systemCode = sysCodeResult.output
             }
 
             if systemCode.isEmpty || ConsoleType.fromSystemCode(systemCode) == .unknown {
-                let evalResult = try await ssh.execute(
+                let evalResult = try await shell.execute(
                     "hakchi eval 'echo \"$sftype-$sfregion\"' 2>/dev/null"
                 )
                 if evalResult.succeeded && !evalResult.output.isEmpty {
@@ -161,7 +265,7 @@ final class DeviceManager: ObservableObject {
             }
 
             if systemCode.isEmpty || ConsoleType.fromSystemCode(systemCode) == .unknown {
-                let srcResult = try await ssh.execute(
+                let srcResult = try await shell.execute(
                     "source /var/version 2>/dev/null && echo \"$sftype-$sfregion\""
                 )
                 if srcResult.succeeded && !srcResult.output.isEmpty {
@@ -173,59 +277,18 @@ final class DeviceManager: ObservableObject {
 
             // Check if custom firmware is loaded
             if canInteract {
-                let cfResult = try await ssh.execute("ls /var/lib/hakchi/ 2>/dev/null")
+                let cfResult = try await shell.execute("ls /var/lib/hakchi/ 2>/dev/null")
                 customFirmwareLoaded = cfResult.succeeded
                 canSync = true
             }
 
             isConnected = true
+            Self.debugLog("probeDevice: SUCCESS type=\(self.consoleType.rawValue) fw=\(self.customFirmwareLoaded) canInteract=\(self.canInteract)")
 
         } catch {
+            Self.debugLog("probeDevice: FAILED \(error.localizedDescription)")
             isConnected = false
         }
-    }
-}
-
-// MARK: - Bonjour Discovery
-
-/// Discovers hakchi SSH services on the local network
-class BonjourBrowser: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
-    private let browser = NetServiceBrowser()
-    private var resolving: NetService?
-    var onServiceFound: ((String, Int) -> Void)?
-    var onServiceLost: (() -> Void)?
-
-    override init() {
-        super.init()
-        browser.delegate = self
-    }
-
-    func start() {
-        browser.searchForServices(ofType: "_ssh._tcp.", inDomain: "local.")
-    }
-
-    func stop() {
-        browser.stop()
-    }
-
-    func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) {
-        if service.name == "hakchi" {
-            resolving = service
-            service.delegate = self
-            service.resolve(withTimeout: 10)
-        }
-    }
-
-    func netServiceBrowser(_ browser: NetServiceBrowser, didRemove service: NetService, moreComing: Bool) {
-        if service.name == "hakchi" {
-            onServiceLost?()
-        }
-    }
-
-    func netServiceDidResolveAddress(_ sender: NetService) {
-        guard let hostName = sender.hostName else { return }
-        let host = hostName.hasSuffix(".") ? String(hostName.dropLast()) : hostName
-        onServiceFound?(host, sender.port)
     }
 }
 
@@ -239,7 +302,6 @@ struct VersionTuple: Comparable {
     }
 
     static func parse(_ string: String) -> VersionTuple {
-        // Extract first numeric version pattern: (\d+[.-]){2,}\d+
         let pattern = #"(?:\d+[\.-]){2,}(?:\d+)+"#
         guard let range = string.range(of: pattern, options: .regularExpression) else {
             return VersionTuple(0, 0, 0, 0)

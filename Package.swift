@@ -11,7 +11,29 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "MbedCrypto",
+            path: "vendor/mbedtls",
+            sources: ["library/"],
+            publicHeadersPath: "include",
+            cSettings: [
+                .define("MBEDTLS_CONFIG_FILE", to: "\"mbedtls/mbedtls_config.h\""),
+            ]
+        ),
+        .target(
+            name: "LibSSH2",
+            dependencies: ["MbedCrypto"],
+            path: "vendor/libssh2",
+            sources: ["src/"],
+            publicHeadersPath: "include",
+            cSettings: [
+                .define("LIBSSH2_MBEDTLS"),
+                .define("HAVE_CONFIG_H"),
+                .headerSearchPath("src"),
+            ]
+        ),
+        .target(
             name: "USBBridge",
+            dependencies: ["LibSSH2"],
             path: "USBBridge",
             sources: ["src"],
             publicHeadersPath: "include",
@@ -27,6 +49,11 @@ let package = Package(
                 .product(name: "SWCompression", package: "SWCompression"),
             ],
             path: "SwiftHakchi",
+            resources: [
+                .copy("Resources/fes1.bin"),
+                .copy("Resources/basehmods.tar"),
+                .copy("Resources/hakchi.hmod"),
+            ],
             linkerSettings: [
                 .linkedFramework("IOKit"),
                 .linkedFramework("CoreFoundation"),

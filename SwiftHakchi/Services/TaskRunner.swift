@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let logger = Logger(subsystem: "com.swifthakchi.app", category: "TaskRunner")
 
 /// Async task runner with progress tracking
 @MainActor
@@ -25,20 +28,24 @@ final class TaskRunner: ObservableObject {
         canCancel = cancellable
         error = nil
 
+        logger.info("Task started: \(name)")
         currentTaskHandle = Task { [weak self] in
             do {
                 guard let self else { return }
                 try await operation(self)
+                logger.info("Task completed: \(name)")
                 await MainActor.run {
                     self.isRunning = false
                     self.progress = 1.0
                 }
             } catch is CancellationError {
+                logger.info("Task cancelled: \(name)")
                 await MainActor.run {
                     self?.isRunning = false
                     self?.currentTask = "Cancelled"
                 }
             } catch {
+                logger.error("Task failed: \(name) — \(error.localizedDescription)")
                 await MainActor.run {
                     self?.isRunning = false
                     self?.error = error

@@ -44,10 +44,22 @@ struct StatusBarView: View {
 
             Spacer()
 
-            // Game count
-            let selectedCount = appState.gameManager.games.filter { $0.isSelected }.count
-            let totalCount = appState.gameManager.games.count
-            Text("\(selectedCount)/\(totalCount) games selected")
+            // Game counts
+            let allGames = appState.gameManager.games
+            let stockCount = allGames.filter { $0.source == .stock }.count
+            let customCount = allGames.filter { $0.source != .stock }.count
+            let selectedCount = allGames.filter { $0.isSelected && $0.source != .stock }.count
+
+            if stockCount > 0 {
+                Text("\(stockCount) built-in")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Divider()
+                    .frame(height: 12)
+            }
+
+            Text("\(selectedCount)/\(customCount) custom games selected")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -67,7 +79,8 @@ struct StatusBarView: View {
 
     private var statusText: String {
         if appState.deviceManager.isConnected {
-            return "Connected"
+            let name = appState.deviceManager.consoleType.displayName
+            return "Connected — \(name)"
         } else if appState.deviceManager.felDevicePresent {
             return "FEL Device Detected"
         }
