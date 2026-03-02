@@ -22,6 +22,18 @@ A native macOS application for modding Nintendo mini consoles, built with Swift 
 - Swift 5.9+
 - USB-A cable (or USB-C adapter) to connect to the console
 
+## Installation
+
+Download the latest `.zip` from [Releases](https://github.com/mattackerman808/swift-hakchi2/releases), extract it, and double-click **Swift Hakchi2.app**.
+
+Because the app is not signed with an Apple Developer certificate, macOS will block it on first launch. To allow it:
+
+1. Open **System Settings > Privacy & Security**
+2. Scroll down to **Security**
+3. Click **Open Anyway** next to the message about Swift Hakchi2, or change the **Allow applications from** setting to include the app
+
+Alternatively, right-click the app and choose **Open** to bypass the warning once.
+
 ## Building
 
 Clone the repository and run:
