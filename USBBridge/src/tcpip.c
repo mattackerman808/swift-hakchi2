@@ -52,6 +52,9 @@
 // Retransmission
 #define TCP_MAX_RETRIES  5
 #define TCP_RETRANSMIT_MS 500
+#define TCP_RTO_MIN_MS   200   // initial data retransmit timeout
+#define TCP_RTO_MAX_MS   2000  // cap for exponential backoff
+#define TCP_BURST_SEGMENTS 8   // segments sent between receive polls
 
 // ---------------------------------------------------------------------------
 // Ethernet header
@@ -153,6 +156,7 @@ struct tcp_conn {
     // TCP state
     tcp_state_t state;
     uint32_t seq_num;       // our next sequence number
+    uint32_t snd_una;       // oldest byte we sent that the peer hasn't ACKed
     uint32_t ack_num;       // what we've acknowledged from peer
     uint32_t peer_window;
 
@@ -282,10 +286,11 @@ static void build_ip_header(ip_header_t *ip, uint32_t src, uint32_t dst,
     ip->checksum = ip_checksum(ip, IP_HEADER_LEN);
 }
 
-/// Build and send a TCP segment. Returns bytes sent or negative error.
-static int send_tcp_segment(tcp_conn_t *c, uint8_t flags,
-                             const uint8_t *payload, uint16_t payload_len,
-                             const uint8_t *tcp_options, uint8_t options_len) {
+/// Build and send a TCP segment with an explicit sequence number (needed to
+/// retransmit data behind c->seq_num). Returns bytes sent or negative error.
+static int send_tcp_segment_seq(tcp_conn_t *c, uint32_t seq, uint8_t flags,
+                                 const uint8_t *payload, uint16_t payload_len,
+                                 const uint8_t *tcp_options, uint8_t options_len) {
     uint8_t tcp_hdr_len = TCP_HEADER_LEN + options_len;
     // Round up to 4-byte boundary
     tcp_hdr_len = (tcp_hdr_len + 3) & ~3;
@@ -306,7 +311,7 @@ static int send_tcp_segment(tcp_conn_t *c, uint8_t flags,
     memset(tcp, 0, tcp_hdr_len);
     tcp->src_port = htons(c->src_port);
     tcp->dst_port = htons(c->dst_port);
-    tcp->seq = htonl(c->seq_num);
+    tcp->seq = htonl(seq);
     tcp->ack = htonl(c->ack_num);
     tcp->data_offset = (tcp_hdr_len / 4) << 4;
     tcp->flags = flags;
@@ -329,6 +334,14 @@ static int send_tcp_segment(tcp_conn_t *c, uint8_t flags,
                                   payload_len);
 
     return rndis_send_packet(c->rndis, frame, frame_len);
+}
+
+/// Build and send a TCP segment at our current sequence number.
+static int send_tcp_segment(tcp_conn_t *c, uint8_t flags,
+                             const uint8_t *payload, uint16_t payload_len,
+                             const uint8_t *tcp_options, uint8_t options_len) {
+    return send_tcp_segment_seq(c, c->seq_num, flags, payload, payload_len,
+                                tcp_options, options_len);
 }
 
 // ---------------------------------------------------------------------------
@@ -405,6 +418,7 @@ static int process_frame(tcp_conn_t *c, const uint8_t *frame, int frame_len) {
         if ((flags & (TCP_SYN | TCP_ACK)) == (TCP_SYN | TCP_ACK)) {
             c->ack_num = peer_seq + 1;
             c->seq_num = peer_ack;  // their ACK of our SYN
+            c->snd_una = peer_ack;
             c->state = TCP_STATE_ESTABLISHED;
             // Send ACK to complete handshake
             send_tcp_segment(c, TCP_ACK, NULL, 0, NULL, 0);
@@ -416,7 +430,19 @@ static int process_frame(tcp_conn_t *c, const uint8_t *frame, int frame_len) {
     case TCP_STATE_CLOSE_WAIT:
         // ACK received data
         if (flags & TCP_ACK) {
-            // peer_ack acknowledges our data up to this point
+            // peer_ack acknowledges our data up to this point. Accept it only
+            // if it advances snd_una and doesn't exceed what we've sent.
+            if ((int32_t)(peer_ack - c->snd_una) > 0 &&
+                (int32_t)(peer_ack - c->seq_num) <= 0) {
+                c->snd_una = peer_ack;
+            }
+        }
+
+        if (payload_len > 0 && peer_seq != c->ack_num) {
+            // Duplicate or out-of-order segment: re-ACK what we have so the
+            // peer knows where to resume.
+            send_tcp_segment(c, TCP_ACK, NULL, 0, NULL, 0);
+            return 0;
         }
 
         if (payload_len > 0 && peer_seq == c->ack_num) {
@@ -651,40 +677,91 @@ int tcp_send(tcp_conn_t *c, const uint8_t *data, uint32_t len, int timeout_ms) {
         fprintf(stderr, "[TCP] send: %u bytes, peer_window=%u\n", len, c->peer_window);
     }
 
-    uint32_t sent = 0;
+    // Reliable send: returns only once the peer has ACKed the data (or on
+    // timeout). Offsets below are relative to `base`, the sequence number of
+    // data[0]. Everything sent by earlier calls is already ACKed.
+    uint32_t base = c->snd_una;
+    c->seq_num = base;
+
+    uint32_t acked = 0;     // bytes the peer has acknowledged
+    uint32_t next = 0;      // next byte to (re)send
+    uint32_t high = 0;      // highest byte ever sent
+    uint32_t rto = TCP_RTO_MIN_MS;
     uint64_t deadline = now_ms() + timeout_ms;
-    int segments_since_poll = 0;
+    uint64_t rto_start = now_ms();
 
-    while (sent < len && now_ms() < deadline) {
-        uint32_t chunk = len - sent;
-        if (chunk > TCP_MSS) chunk = TCP_MSS;
+    while (acked < len && now_ms() < deadline) {
+        // Send as much as the peer's advertised window allows
+        int burst = 0;
+        while (next < len && burst < TCP_BURST_SEGMENTS) {
+            uint32_t in_flight = next - acked;
+            if (in_flight >= c->peer_window) break;
 
-        // Only set PSH on last segment of the batch
-        uint8_t flags = TCP_ACK;
-        if (sent + chunk >= len) flags |= TCP_PSH;
+            uint32_t chunk = len - next;
+            if (chunk > TCP_MSS) chunk = TCP_MSS;
+            if (chunk > c->peer_window - in_flight) chunk = c->peer_window - in_flight;
 
-        int ret = send_tcp_segment(c, flags, data + sent, chunk, NULL, 0);
-        if (ret < 0) return ret;
+            // Only set PSH on last segment of the batch
+            uint8_t flags = TCP_ACK;
+            if (next + chunk >= len) flags |= TCP_PSH;
 
-        c->seq_num += chunk;
-        sent += chunk;
-        segments_since_poll++;
+            int ret = send_tcp_segment_seq(c, base + next, flags, data + next,
+                                           (uint16_t)chunk, NULL, 0);
+            if (ret < 0) return ret;
 
-        // Every 8 segments (~11KB), poll briefly for ACKs and incoming data.
-        // This prevents overrunning the peer's receive window on a USB link.
-        if (segments_since_poll >= 8) {
-            recv_and_process(c, 1, true); // 1ms quick poll, return on ACK
-            segments_since_poll = 0;
-            if (c->state == TCP_STATE_CLOSED) return TCP_ERROR_RESET;
+            next += chunk;
+            if (next > high) {
+                high = next;
+                c->seq_num = base + high;
+            }
+            burst++;
+        }
+
+        // Poll for ACKs and incoming data. Quick poll while there is more to
+        // send, longer wait once we're blocked on the peer.
+        bool blocked = next >= len || (next - acked) >= c->peer_window;
+        recv_and_process(c, blocked ? 20 : 1, true);
+        if (c->state == TCP_STATE_CLOSED) return TCP_ERROR_RESET;
+
+        uint32_t now_acked = c->snd_una - base;
+        if (now_acked > acked) {
+            acked = now_acked;
+            if (next < acked) next = acked;
+            rto = TCP_RTO_MIN_MS;
+            rto_start = now_ms();
+        } else if (now_ms() - rto_start >= rto) {
+            // No progress: go back and resend from the first unACKed byte.
+            // One segment goes out regardless of the window, which also
+            // serves as a zero-window probe.
+            fprintf(stderr, "[TCP] Retransmit from %u/%u (in_flight=%u, peer_window=%u, rto=%ums)\n",
+                    acked, len, high - acked, c->peer_window, rto);
+            uint32_t chunk = len - acked;
+            if (chunk > TCP_MSS) chunk = TCP_MSS;
+            uint8_t flags = TCP_ACK;
+            if (acked + chunk >= len) flags |= TCP_PSH;
+
+            int ret = send_tcp_segment_seq(c, base + acked, flags, data + acked,
+                                           (uint16_t)chunk, NULL, 0);
+            if (ret < 0) return ret;
+
+            next = acked + chunk;
+            if (next > high) {
+                high = next;
+                c->seq_num = base + high;
+            }
+            rto *= 2;
+            if (rto > TCP_RTO_MAX_MS) rto = TCP_RTO_MAX_MS;
+            rto_start = now_ms();
         }
     }
 
-    // Final poll to process trailing ACKs
-    if (sent > 0) {
-        recv_and_process(c, 50, true);
+    // Anything not ACKed counts as unsent; the caller will resend it.
+    c->seq_num = base + acked;
+    if (acked < len) {
+        fprintf(stderr, "[TCP] send timed out: %u/%u bytes ACKed\n", acked, len);
     }
 
-    return (int)sent;
+    return (int)acked;
 }
 
 int tcp_recv(tcp_conn_t *c, uint8_t *buf, uint32_t len, int timeout_ms) {

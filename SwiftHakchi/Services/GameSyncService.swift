@@ -92,6 +92,10 @@ actor GameSyncService {
         progress("Mounting games...", 0.82)
         _ = try? await shell.execute("mount --bind \"\(page0)\" \"\(gamePath)\"")
         _ = try? await shell.execute("ln -sf \"\(page0)\" /var/games")
+        // hakchi remembers the current menu page in /var/saves/hakchi/menu. We have just put page 000 on
+        // screen, so record that; otherwise a stale "001" makes the "More games..." folder do nothing
+        // (chmenu exits when asked for the page it believes is already showing).
+        _ = try? await shell.execute("mkdir -p /var/saves/hakchi && echo 000 > /var/saves/hakchi/menu")
 
         // Step 10: Restart console UI
         progress("Restarting console...", 0.92)
@@ -216,6 +220,13 @@ actor GameSyncService {
 
     // MARK: - Custom Game Upload
 
+    private var isSnesConsole: Bool {
+        switch consoleType {
+        case .snesUsa, .snesEur, .superFamicom, .superFamicomShonenJump: return true
+        default: return false
+        }
+    }
+
     private func uploadGame(game: Game, storageDir: String, menuDir: String) async throws {
         let gameDir = URL(fileURLWithPath: game.romPath)
         guard FileManager.default.fileExists(atPath: gameDir.path),
@@ -232,7 +243,22 @@ actor GameSyncService {
             return !name.hasSuffix(".desktop") && !name.hasSuffix(".png") && !name.hasPrefix(".")
         }
 
-        let romExt = romFile?.pathExtension ?? "nes"
+        var romExt = romFile?.pathExtension ?? "nes"
+        var romData = romFile.flatMap { try? Data(contentsOf: $0) }
+        var saveCount: Int?
+
+        // The stock SNES emulator (canoe) only runs .sfrom, so convert here
+        if isSnesConsole, let data = romData, SfromConverter.canConvert(fileExtension: romExt) {
+            if let converted = SfromConverter.convert(fileData: data, fileExtension: romExt) {
+                logger.info("Converted \(code) to sfrom (title: \(converted.title))")
+                romData = converted.data
+                romExt = "sfrom"
+                saveCount = converted.hasSaveRam ? 3 : 0
+            } else {
+                logger.warning("Could not convert \(code) to sfrom, uploading as-is")
+            }
+        }
+
         let safeRomFilename = "\(code).\(romExt)"
         let romConsolePath = "\(storageDir)/\(code)/\(safeRomFilename)"
 
@@ -241,7 +267,8 @@ actor GameSyncService {
                 .flatMap { try? Data(contentsOf: $0) } ?? Data(),
             game: game,
             romConsolePath: romConsolePath,
-            storagePath: "\(storageDir)/\(code)"
+            storagePath: "\(storageDir)/\(code)",
+            saveCount: saveCount
         )
 
         // --- .storage/{code}/ — ROM + PNG ---
@@ -265,7 +292,7 @@ actor GameSyncService {
                 let small = resizeCoverArt(data: data, width: 40, height: 40)
                 storageTar.addFile(name: "\(code)/\(code)_small.png", contents: small)
             } else if romFile != nil && filename == romFile!.lastPathComponent {
-                storageTar.addFile(name: "\(code)/\(safeRomFilename)", contents: data)
+                storageTar.addFile(name: "\(code)/\(safeRomFilename)", contents: romData ?? data)
             } else {
                 storageTar.addFile(name: "\(code)/\(filename)", contents: data)
             }
@@ -286,7 +313,8 @@ actor GameSyncService {
     }
 
     private func buildGameDesktop(
-        localData: Data, game: Game, romConsolePath: String, storagePath: String
+        localData: Data, game: Game, romConsolePath: String, storagePath: String,
+        saveCount: Int? = nil
     ) -> Data {
         let desktop: DesktopFile
         if localData.isEmpty {
@@ -306,6 +334,13 @@ actor GameSyncService {
             desktop.exec = romConsolePath
         }
 
+        desktop.name = Self.menuSafeName(desktop.name)
+        // The stock menu sorts by SortRawTitle; games added without one all tie and come out
+        // in arbitrary order, so derive it from the name as hakchi2-CE does.
+        if desktop.sortName.trimmingCharacters(in: .whitespaces).isEmpty {
+            desktop.sortName = Self.sortTitle(desktop.name)
+        }
+        if let saveCount { desktop.saveCount = saveCount }
         desktop.profilePath = "/var/saves"
         desktop.omitProfilePathCode = false
         // Icon={iconPath}/{code}/{iconFilename} — iconPath is .storage parent
@@ -314,6 +349,27 @@ actor GameSyncService {
         desktop.iconFilename = "\(game.code).png"
 
         return desktop.toData()
+    }
+
+    /// Sort key for the stock menu: lowercase, without a leading "the " (hakchi2-CE's rule).
+    static func sortTitle(_ name: String) -> String {
+        var key = menuSafeName(name).lowercased().trimmingCharacters(in: .whitespaces)
+        if key.hasPrefix("the ") { key = String(key.dropFirst(4)) }
+        return key
+    }
+
+    /// The stock menu (ReedPlayer) crashes with a C8 error when a title has an
+    /// apostrophe directly followed by a digit (e.g. "NHL '94"), so drop those
+    /// apostrophes. Backslashes are removed for the same Lua-quoting reason.
+    static func menuSafeName(_ name: String) -> String {
+        var result = ""
+        let chars = Array(name)
+        for (i, ch) in chars.enumerated() {
+            if ch == "\\" { continue }
+            if ch == "'" || ch == "\u{2019}", i + 1 < chars.count, chars[i + 1].isNumber { continue }
+            result.append(ch)
+        }
+        return result
     }
 
     // MARK: - Icon Assets

@@ -324,23 +324,41 @@ int ssh_exec_stdin(ssh_session_t *s, const char *command,
     // so libssh2 can quickly process WINDOW_ADJUST messages
     s->recv_timeout_ms = 50;
 
+    // Write in non-blocking mode. In blocking mode, when the remote channel
+    // window is exhausted libssh2 waits with poll() on the session socket —
+    // which is our dummy socket and never becomes readable — so the write
+    // hangs for the full session timeout. Instead, retry on EAGAIN: each
+    // attempt drains incoming packets (incl. WINDOW_ADJUST) via our recv
+    // callback, which itself waits up to recv_timeout_ms.
+    libssh2_session_set_blocking(s->ssh, 0);
+
     fprintf(stderr, "[SSH] exec_stdin: writing %u bytes\n", stdin_len);
     uint32_t written = 0;
     uint32_t last_report = 0;
+    uint32_t window_waits = 0;
+    uint64_t write_deadline = now_ms_ssh() + (uint64_t)timeout_ms;
     while (written < stdin_len) {
         uint32_t chunk = stdin_len - written;
         if (chunk > 32768) chunk = 32768;
 
         ssize_t n = libssh2_channel_write(ch, (const char *)(stdin_data + written), chunk);
+        if (n == LIBSSH2_ERROR_EAGAIN || n == 0) {
+            // Remote window is full — wait for the console to catch up
+            if (now_ms_ssh() > write_deadline) {
+                fprintf(stderr, "[SSH] stdin write timed out at %u/%u (no progress for %d ms)\n",
+                        written, stdin_len, timeout_ms);
+                break;
+            }
+            window_waits++;
+            if (n == 0) tcp_poll(s->tcp, 10);
+            continue;
+        }
         if (n < 0) {
             fprintf(stderr, "[SSH] stdin write error at %u/%u: %zd\n", written, stdin_len, n);
             break;
         }
-        if (n == 0) {
-            fprintf(stderr, "[SSH] stdin write returned 0 at %u/%u\n", written, stdin_len);
-            break;
-        }
         written += (uint32_t)n;
+        write_deadline = now_ms_ssh() + (uint64_t)timeout_ms;
 
         // Progress every 100KB
         if (written - last_report >= 102400) {
@@ -349,9 +367,11 @@ int ssh_exec_stdin(ssh_session_t *s, const char *command,
             last_report = written;
         }
     }
-    fprintf(stderr, "[SSH] exec_stdin: write complete (%u bytes), sending EOF\n", written);
+    fprintf(stderr, "[SSH] exec_stdin: write complete (%u bytes, %u window waits), sending EOF\n",
+            written, window_waits);
 
     // Signal EOF on stdin
+    libssh2_session_set_blocking(s->ssh, 1);
     libssh2_channel_send_eof(ch);
 
     // Switch to non-blocking for the read loop
